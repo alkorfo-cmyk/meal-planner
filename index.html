@@ -306,6 +306,7 @@ select.input option{padding:4px;color:var(--text)}
       <button class="nav-btn" onclick="switchTab('lib')" id="nav-lib">📖 Meals</button>
       <button class="nav-btn" onclick="openStoresModal()" id="nav-stores" title="Manage Stores">🏬 Stores</button>
       <button class="nav-btn" onclick="openCloudSyncModal()" id="nav-cloud" title="Cloud Sync Setup">☁️</button>
+      <button class="nav-btn" onclick="openBackupModal()" id="nav-backup" title="Backup / Restore your data">💾</button>
       <button class="nav-btn nav-sync-btn" onclick="syncFromCloud()" id="nav-sync" title="Pull latest data" style="width:40px;padding:7px 8px">↻</button>
     </div>
   </div>
@@ -2068,6 +2069,113 @@ function deleteCatalogItem(id,ev){
   toast(`${item.name} deleted from catalog`);
 }
 function closeCatalog(){const box=document.getElementById('modal-box');if(box)box.style.maxWidth='';closeModal();}
+
+// ── BACKUP / RESTORE ──
+function collectAllData(){
+  return {
+    _backup:true,
+    _exportedAt:new Date().toISOString(),
+    meals:state.meals,
+    plan:state.plan,
+    items:state.items,
+    checked:state.checked,
+    qtyOvr:state.qtyOvr,
+    hiddenGen:state.hiddenGen,
+    purchases:state.purchases,
+    dismissed:state.dismissed,
+    onList:state.onList,
+    storeConfig:{stores:STORES,cats:STORE_CATS,colors:STORE_COLOR}
+  };
+}
+function openBackupModal(){
+  const box=document.getElementById('modal-box');
+  const mealCount=state.meals.length;
+  const itemCount=state.items.length;
+  box.innerHTML=`
+    <div class="modal-title">💾 Backup &amp; Restore</div>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:18px;line-height:1.55">
+      Save everything — all ${mealCount} meals, ${itemCount} catalog items, stores, and settings — to a single file on your device. Keep it somewhere safe. You can load it back here anytime, or on any other device.
+    </p>
+    <div class="cloud-step" style="margin-bottom:12px">
+      <div class="cloud-step-num">⬇</div>
+      <div class="cloud-step-body">
+        <div class="cloud-step-title">Download a backup</div>
+        <div class="cloud-step-desc">Saves a <code>.json</code> file with all your data. Do this on your live site first, before changing anything.</div>
+        <button class="btn btn-primary btn-sm" onclick="downloadBackup()">⬇ Download Backup File</button>
+      </div>
+    </div>
+    <div class="cloud-step">
+      <div class="cloud-step-num">⬆</div>
+      <div class="cloud-step-body">
+        <div class="cloud-step-title">Restore from a backup</div>
+        <div class="cloud-step-desc">Load a backup file. This <strong>replaces</strong> all current data with what's in the file.</div>
+        <input type="file" id="backup-file-input" accept=".json,application/json" style="display:none" onchange="handleRestoreFile(event)">
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('backup-file-input').click()">⬆ Choose Backup File…</button>
+        <div id="restore-status"></div>
+      </div>
+    </div>
+    <div style="margin-top:20px"><button class="btn btn-primary" style="width:100%" onclick="closeModal()">Done</button></div>`;
+  document.getElementById('modal-overlay').style.display='flex';
+}
+function downloadBackup(){
+  try{
+    const data=collectAllData();
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='meal_planner_backup_'+new Date().toISOString().slice(0,10)+'.json';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('✓ Backup downloaded — keep it safe');
+  }catch(e){
+    console.error(e);
+    alert('Backup failed: '+e.message);
+  }
+}
+function handleRestoreFile(e){
+  const file=e.target.files&&e.target.files[0];
+  if(!file)return;
+  const statusEl=document.getElementById('restore-status');
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    try{
+      const data=JSON.parse(ev.target.result);
+      if(!data||!data.meals){throw new Error('This file doesn\'t look like a Meal Planner backup.');}
+      const mealCount=Array.isArray(data.meals)?data.meals.length:0;
+      const itemCount=Array.isArray(data.items)?data.items.length:0;
+      if(!confirm(`Restore this backup?\n\nIt contains ${mealCount} meals and ${itemCount} catalog items.\n\nThis will REPLACE all current data on this device.`)){
+        e.target.value='';
+        return;
+      }
+      if(data.meals)state.meals=data.meals;
+      if(data.plan)state.plan=data.plan;
+      if(data.items)state.items=data.items;
+      if(data.checked)state.checked=data.checked;
+      if(data.qtyOvr)state.qtyOvr=data.qtyOvr;
+      if(data.hiddenGen)state.hiddenGen=data.hiddenGen;
+      if(data.purchases)state.purchases=data.purchases;
+      if(data.dismissed)state.dismissed=data.dismissed;
+      if(data.onList)state.onList=data.onList;
+      if(data.storeConfig&&data.storeConfig.stores&&data.storeConfig.cats&&data.storeConfig.colors){
+        STORES=data.storeConfig.stores;
+        STORE_CATS=data.storeConfig.cats;
+        STORE_COLOR=data.storeConfig.colors;
+      }
+      if(!STORES.includes(state.currentStore))state.currentStore=STORES[0];
+      persist();
+      renderAll();
+      closeModal();
+      toast(`✓ Restored ${mealCount} meals`);
+    }catch(err){
+      console.error(err);
+      if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>'+esc(err.message)+'</span></div>';
+    }
+  };
+  reader.onerror=()=>{if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Could not read the file.</span></div>';};
+  reader.readAsText(file);
+  e.target.value='';
+}
 
 // ── HELPERS ──
 function fmtQty(n){if(!n)return'';return n%1===0?n.toString():n.toFixed(1);}
