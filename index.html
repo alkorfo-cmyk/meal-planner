@@ -305,7 +305,7 @@ select.input option{padding:4px;color:var(--text)}
       <button class="nav-btn" onclick="switchTab('shop')" id="nav-shop">🛒 Shopping</button>
       <button class="nav-btn" onclick="switchTab('lib')" id="nav-lib">📖 Meals</button>
       <button class="nav-btn" onclick="openStoresModal()" id="nav-stores" title="Manage Stores">🏬 Stores</button>
-      <button class="nav-btn" onclick="openCloudSyncModal()" id="nav-cloud" title="Cloud Sync Setup">☁️</button>
+      <button class="nav-btn" onclick="openGistSyncModal()" id="nav-cloud" title="Sync via GitHub Gist">🔗</button>
       <button class="nav-btn" onclick="openBackupModal()" id="nav-backup" title="Backup / Restore your data">💾</button>
       <button class="nav-btn nav-sync-btn" onclick="syncFromCloud()" id="nav-sync" title="Pull latest data" style="width:40px;padding:7px 8px">↻</button>
     </div>
@@ -482,23 +482,20 @@ async function lod(k){
 function uid(){return '_'+Math.random().toString(36).slice(2,9);}
 
 // ═══════════════════════════════════════════════════════════
-// CLOUD SYNC (JSONBin.io) — MANUAL ONLY
-// Auto-push and auto-pull are DISABLED to stay within the free-tier
-// request quota. Syncing happens only when you tap ↻ / Push / Pull.
+// CLOUD SYNC via GITHUB GIST — MANUAL ONLY
+// Reads/writes a single private Gist. No auto-sync, so the
+// hourly GitHub API limit (5000/hr) is never a concern.
 // ═══════════════════════════════════════════════════════════
-const CLOUD_CONFIG_KEY='mealplanner_cloud_config';
+const GIST_CONFIG_KEY='mealplanner_gist_config';
+const GIST_FILENAME='meal_planner_data.json';
 let cloudLastPush=0;
 let cloudLastPull=0;
 
 function getCloudConfig(){
-  try{const raw=localStorage.getItem(CLOUD_CONFIG_KEY);return raw?JSON.parse(raw):null;}catch(e){return null;}
+  try{const raw=localStorage.getItem(GIST_CONFIG_KEY);return raw?JSON.parse(raw):null;}catch(e){return null;}
 }
-function setCloudConfig(cfg){
-  try{localStorage.setItem(CLOUD_CONFIG_KEY,JSON.stringify(cfg));}catch(e){}
-}
-function clearCloudConfig(){
-  try{localStorage.removeItem(CLOUD_CONFIG_KEY);}catch(e){}
-}
+function setCloudConfig(cfg){try{localStorage.setItem(GIST_CONFIG_KEY,JSON.stringify(cfg));}catch(e){}}
+function clearCloudConfig(){try{localStorage.removeItem(GIST_CONFIG_KEY);}catch(e){}}
 
 function snapshotStateForCloud(){
   return {
@@ -509,7 +506,6 @@ function snapshotStateForCloud(){
     _syncedAt:Date.now(), _version:1
   };
 }
-
 function applyCloudSnapshot(snap){
   if(!snap||typeof snap!=='object')return false;
   if(snap.meals)state.meals=snap.meals;
@@ -522,9 +518,7 @@ function applyCloudSnapshot(snap){
   if(snap.dismissed)state.dismissed=snap.dismissed;
   if(snap.onList)state.onList=snap.onList;
   if(snap.storeConfig&&snap.storeConfig.stores&&snap.storeConfig.cats&&snap.storeConfig.colors){
-    STORES=snap.storeConfig.stores;
-    STORE_CATS=snap.storeConfig.cats;
-    STORE_COLOR=snap.storeConfig.colors;
+    STORES=snap.storeConfig.stores;STORE_CATS=snap.storeConfig.cats;STORE_COLOR=snap.storeConfig.colors;
   }
   if(!STORES.includes(state.currentStore))state.currentStore=STORES[0];
   try{
@@ -542,86 +536,69 @@ function applyCloudSnapshot(snap){
   return true;
 }
 
-// DISABLED: was auto-pushing every save (3s debounce) and burning the quota.
-function schedulCloudPush(){
-  return;
-}
+// No-ops kept so existing save calls don't error. Sync is manual only.
+function schedulCloudPush(){return;}
+function startCloudAutoSync(){return;}
 
-// DISABLED: was auto-pulling every 60 seconds and burning the quota.
-function startCloudAutoSync(){
-  return;
-}
+const GH_HEADERS=(token)=>({'Accept':'application/vnd.github+json','Authorization':'Bearer '+token,'X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'});
 
 async function cloudPush(){
   const cfg=getCloudConfig();
-  if(!cfg||!cfg.apiKey||!cfg.binId)return {ok:false,err:'not configured'};
+  if(!cfg||!cfg.token||!cfg.gistId)return {ok:false,err:'not configured'};
   try{
     updateSyncStatus('pushing');
     const snap=snapshotStateForCloud();
-    const res=await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}`,{
-      method:'PUT',
-      headers:{'Content-Type':'application/json','X-Master-Key':cfg.apiKey,'X-Bin-Versioning':'false'},
-      body:JSON.stringify(snap)
-    });
-    if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,100)}`);}
+    const body={files:{[GIST_FILENAME]:{content:JSON.stringify(snap)}}};
+    const res=await fetch('https://api.github.com/gists/'+cfg.gistId,{method:'PATCH',headers:GH_HEADERS(cfg.token),body:JSON.stringify(body)});
+    if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,120)}`);}
     cloudLastPush=Date.now();
     updateSyncStatus('ok');
     return {ok:true};
-  }catch(e){
-    console.error('cloudPush failed',e);
-    updateSyncStatus('error',e.message);
-    return {ok:false,err:e.message};
-  }
+  }catch(e){console.error('cloudPush failed',e);updateSyncStatus('error',e.message);return {ok:false,err:e.message};}
 }
-
 async function cloudPull(silent){
   const cfg=getCloudConfig();
-  if(!cfg||!cfg.apiKey||!cfg.binId)return {ok:false,err:'not configured'};
+  if(!cfg||!cfg.token||!cfg.gistId)return {ok:false,err:'not configured'};
   try{
     if(!silent)updateSyncStatus('pulling');
-    const res=await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}/latest`,{
-      method:'GET',headers:{'X-Master-Key':cfg.apiKey}
-    });
-    if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,100)}`);}
+    const res=await fetch('https://api.github.com/gists/'+cfg.gistId,{method:'GET',headers:GH_HEADERS(cfg.token)});
+    if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,120)}`);}
     const data=await res.json();
-    const snap=data.record||data;
+    const file=data.files&&data.files[GIST_FILENAME];
+    if(!file||!file.content){
+      if(!silent)toast('Gist is empty, uploading your data…');
+      await cloudPush();
+      return {ok:true,empty:true};
+    }
+    let snap;
+    try{snap=JSON.parse(file.content);}catch(e){throw new Error('Stored data is corrupted / not valid JSON');}
     if(!snap||!snap._version){
-      if(!silent)toast('Bin is empty, uploading your data…');
+      if(!silent)toast('Gist has no valid data yet, uploading…');
       await cloudPush();
       return {ok:true,empty:true};
     }
     applyCloudSnapshot(snap);
     cloudLastPull=Date.now();
-    if(!silent){
-      renderAll();
-      if(document.getElementById('mobile-shop').style.display!=='none')renderMobileShop();
-    }
+    if(!silent){renderAll();if(document.getElementById('mobile-shop').style.display!=='none')renderMobileShop();}
     updateSyncStatus('ok');
     return {ok:true,snap};
-  }catch(e){
-    console.error('cloudPull failed',e);
-    if(!silent)updateSyncStatus('error',e.message);
-    return {ok:false,err:e.message};
-  }
+  }catch(e){console.error('cloudPull failed',e);if(!silent)updateSyncStatus('error',e.message);return {ok:false,err:e.message};}
 }
-
-async function cloudCreateBin(apiKey){
+// Create a brand-new private Gist seeded with current data; returns its id
+async function cloudCreateGist(token){
   const snap=snapshotStateForCloud();
-  const res=await fetch('https://api.jsonbin.io/v3/b',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','X-Master-Key':apiKey,'X-Bin-Name':'MealPlanner-'+new Date().toISOString().slice(0,10),'X-Bin-Private':'true'},
-    body:JSON.stringify(snap)
-  });
-  if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,200)}`);}
+  const body={description:'Meal Planner sync data',public:false,files:{[GIST_FILENAME]:{content:JSON.stringify(snap)}}};
+  const res=await fetch('https://api.github.com/gists',{method:'POST',headers:GH_HEADERS(token),body:JSON.stringify(body)});
+  if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,160)}`);}
   const data=await res.json();
-  return data.metadata?.id||data.id;
+  return data.id;
 }
 
 function updateSyncStatus(status,msg){
   const btns=document.querySelectorAll('.nav-sync-btn');
   for(const b of btns){
     b.classList.remove('sync-ok','sync-error','sync-busy');
-    if(status==='pushing'||status==='pulling'){b.classList.add('sync-busy');b.title=status==='pushing'?'Syncing to cloud…':'Syncing from cloud…';}
+    if(status==='pushing'||status==='pulling'){b.classList.add('sync-busy');b.title=status==='pushing'?'Syncing to Gist…':'Syncing from Gist…';}
     else if(status==='ok'){b.classList.add('sync-ok');b.title='Synced';}
     else if(status==='error'){b.classList.add('sync-error');b.title='Sync error: '+(msg||'');}
   }
@@ -1640,10 +1617,10 @@ function completeShopping(){
   toast(`🎉 Trip complete! ${logged} item${logged!==1?'s':''} logged for future suggestions`);
 }
 
-// Sync button: pull from cloud manually (only runs when tapped)
+// Sync button: pull from Gist manually (only runs when tapped)
 async function syncFromCloud(){
   const cfg=getCloudConfig();
-  if(!cfg||!cfg.apiKey||!cfg.binId){openCloudSyncModal();return;}
+  if(!cfg||!cfg.token||!cfg.gistId){openGistSyncModal();return;}
   toast('Syncing…');
   const btn=document.querySelector('.mshop-sync');
   if(btn){btn.disabled=true;btn.textContent='⏳';}
@@ -1891,75 +1868,81 @@ function deleteCat(storeName,catName){
   STORE_CATS[storeName]=otherCats;persist();refreshStoresModal();renderShop();renderLibrary();toast(`Category "${catName}" deleted`);
 }
 
-// ── CLOUD SYNC SETUP ──
-function openCloudSyncModal(){
+// ── GITHUB GIST SYNC SETUP ──
+function openGistSyncModal(){
   const cfg=getCloudConfig()||{};
   const box=document.getElementById('modal-box');
   box.style.maxWidth='580px';
-  if(cfg.apiKey&&cfg.binId){box.innerHTML=renderCloudConnected(cfg);}else{box.innerHTML=renderCloudSetup();}
+  if(cfg.token&&cfg.gistId){box.innerHTML=renderGistConnected(cfg);}else{box.innerHTML=renderGistSetup();}
   document.getElementById('modal-overlay').style.display='flex';
 }
-function renderCloudSetup(){
+function renderGistSetup(){
   return `
-    <div class="modal-title">☁️ Set Up Cloud Sync</div>
-    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px;line-height:1.55">Cloud sync keeps your meal plans and shopping list synced between devices. It's free and takes 2 minutes.</p>
+    <div class="modal-title">🔗 Set Up Sync (GitHub Gist)</div>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px;line-height:1.55">Sync your data across devices through a private GitHub Gist. It's free, permanent, and tied to your GitHub account — no separate service, no monthly limits to worry about.</p>
     <div class="cloud-steps">
-      <div class="cloud-step"><div class="cloud-step-num">1</div><div class="cloud-step-body"><div class="cloud-step-title">Create a free JSONBin account</div><div class="cloud-step-desc">The free tier gives you 10,000 requests per month. With sync now manual-only, you'll use only a handful per week.</div><a href="https://jsonbin.io/login" target="_blank" class="cloud-link-btn">Open JSONBin →</a></div></div>
-      <div class="cloud-step"><div class="cloud-step-num">2</div><div class="cloud-step-body"><div class="cloud-step-title">Copy your API Key</div><div class="cloud-step-desc">Profile menu → <strong>API Keys</strong>. Copy the <strong>X-MASTER-KEY</strong> (starts with <code>$2a$10$...</code>).</div></div></div>
-      <div class="cloud-step"><div class="cloud-step-num">3</div><div class="cloud-step-body"><div class="cloud-step-title">Paste it here</div><input class="input" id="cloud-api-key" type="password" placeholder="$2a$10$... paste your X-MASTER-KEY" autocomplete="off" spellcheck="false"><div class="cloud-hint">We'll create a secure storage bin for you automatically.</div></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">1</div><div class="cloud-step-body"><div class="cloud-step-title">Create a GitHub access token</div><div class="cloud-step-desc">Open the link, then: <strong>Generate new token</strong> → give it a name like "MealPlanner" → set an expiration (or "No expiration") → under <strong>Permissions</strong>, find <strong>Gists</strong> and set it to <strong>Read and write</strong> → Generate.</div><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" class="cloud-link-btn">Open GitHub Token Page →</a></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">2</div><div class="cloud-step-body"><div class="cloud-step-title">Paste the token here</div><input class="input" id="gist-token" type="password" placeholder="github_pat_... or ghp_..." autocomplete="off" spellcheck="false"><div class="cloud-hint">Stored only on this device. Never shared or uploaded anywhere except GitHub itself.</div></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">3</div><div class="cloud-step-body"><div class="cloud-step-title">Create your sync file</div><div class="cloud-step-desc">Tap below and we'll make a private Gist holding your current data, then connect to it.</div></div></div>
     </div>
-    <details style="margin-top:18px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Already have a bin? (for family members joining)</summary><div style="padding-top:10px"><div class="form-label" style="margin-bottom:5px">Paste the family share code</div><input class="input" id="cloud-share-code" placeholder="Paste share code from the primary device" style="font-family:monospace;font-size:12px"></div></details>
-    <div id="cloud-setup-status"></div>
-    <div style="display:flex;gap:10px;margin-top:20px"><button class="btn btn-secondary" style="flex:1" onclick="closeCloudSync()">Cancel</button><button class="btn btn-primary" style="flex:2" onclick="connectCloudSync()" id="cloud-connect-btn">☁️ Connect Cloud Sync</button></div>`;
+    <details style="margin-top:18px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Family member joining? Use a share code instead</summary><div style="padding-top:10px"><div class="form-label" style="margin-bottom:5px">Paste the share code from the main device</div><input class="input" id="gist-share-code" placeholder="Paste share code" style="font-family:monospace;font-size:12px"></div></details>
+    <div id="gist-setup-status"></div>
+    <div style="display:flex;gap:10px;margin-top:20px"><button class="btn btn-secondary" style="flex:1" onclick="closeGistSync()">Cancel</button><button class="btn btn-primary" style="flex:2" onclick="connectGistSync()" id="gist-connect-btn">🔗 Create &amp; Connect</button></div>`;
 }
-function renderCloudConnected(cfg){
+function renderGistConnected(cfg){
   const lastPushStr=cloudLastPush?new Date(cloudLastPush).toLocaleTimeString():'—';
-  const shareCode=btoa(JSON.stringify({k:cfg.apiKey,b:cfg.binId}));
+  const shareCode=btoa(JSON.stringify({t:cfg.token,g:cfg.gistId}));
   return `
-    <div class="modal-title">☁️ Cloud Sync Connected</div>
-    <div class="cloud-status-card"><div class="cloud-status-icon">✓</div><div style="flex:1"><div style="font-weight:700;color:var(--green-dark);font-size:15px">Sync is active (manual)</div><div style="font-size:12px;color:var(--text-muted);margin-top:3px">Last saved to cloud: ${lastPushStr}</div></div></div>
-    <p style="font-size:12px;color:var(--text-muted);margin:12px 0;line-height:1.5">Sync only happens when you tap the ↻ button or the buttons below — this keeps you well under the free request limit. Tap <strong>Push Now</strong> after making changes, and <strong>Pull Now</strong> on another device to receive them.</p>
+    <div class="modal-title">🔗 Sync Connected</div>
+    <div class="cloud-status-card"><div class="cloud-status-icon">✓</div><div style="flex:1"><div style="font-weight:700;color:var(--green-dark);font-size:15px">Gist sync is active</div><div style="font-size:12px;color:var(--text-muted);margin-top:3px">Last pushed: ${lastPushStr}</div></div></div>
+    <p style="font-size:12px;color:var(--text-muted);margin:12px 0;line-height:1.5">Sync happens only when you tap the buttons — tap <strong>Push Now</strong> after changes, and <strong>Pull Now</strong> (or the ↻ button) on another device to receive them.</p>
     <div style="margin:18px 0;padding:14px;background:#FFF8E1;border-radius:10px;border:1px solid #F0D080">
       <div class="form-label" style="margin-bottom:6px;color:#7B5800">📤 Family Share Code</div>
-      <div style="font-size:12px;color:#9B7320;margin-bottom:8px;line-height:1.5">Send this to family members so they can share your list. They paste it into "Already have a bin?" on their device.</div>
+      <div style="font-size:12px;color:#9B7320;margin-bottom:8px;line-height:1.5">Send this to family members so they sync the same list. They paste it into "Family member joining?" on their device.</div>
       <textarea class="input" readonly id="share-code-field" style="font-family:monospace;font-size:11px;background:white;min-height:60px;word-break:break-all;color:#3A2E1A">${shareCode}</textarea>
       <button class="btn btn-sm btn-primary" style="width:100%;margin-top:8px" onclick="copyShareCode()">📋 Copy Share Code</button>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPull()">⬇ Pull Now</button><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPush()">⬆ Push Now</button></div>
-    <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect Cloud Sync</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing but your data stays in the cloud. Reconnect anytime using your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectCloudSync()">Disconnect from Cloud Sync</button></details>
-    <button class="btn btn-primary" style="width:100%" onclick="closeCloudSync()">Done</button>`;
+    <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing. Your data stays both here and in the Gist. Reconnect anytime with your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectGistSync()">Disconnect Sync</button></details>
+    <button class="btn btn-primary" style="width:100%" onclick="closeGistSync()">Done</button>`;
 }
-async function connectCloudSync(){
-  const btn=document.getElementById('cloud-connect-btn');
-  const apiKey=document.getElementById('cloud-api-key')?.value?.trim();
-  const shareCode=document.getElementById('cloud-share-code')?.value?.trim();
-  const statusEl=document.getElementById('cloud-setup-status');
+async function connectGistSync(){
+  const btn=document.getElementById('gist-connect-btn');
+  const token=document.getElementById('gist-token')?.value?.trim();
+  const shareCode=document.getElementById('gist-share-code')?.value?.trim();
+  const statusEl=document.getElementById('gist-setup-status');
   if(shareCode){
     btn.disabled=true;
     statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Joining family sync…</span></div>';
     try{
       const decoded=JSON.parse(atob(shareCode));
-      if(!decoded.k||!decoded.b)throw new Error('Invalid share code format');
-      setCloudConfig({apiKey:decoded.k,binId:decoded.b});
+      if(!decoded.t||!decoded.g)throw new Error('Invalid share code format');
+      setCloudConfig({token:decoded.t,gistId:decoded.g});
       const r=await cloudPull(true);
       if(!r.ok)throw new Error(r.err||'Failed to pull data');
       statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Pulling latest data…</span></div>';
       renderAll();
-      setTimeout(()=>{closeCloudSync();toast('☁️ Cloud sync connected');},800);
+      setTimeout(()=>{closeGistSync();toast('🔗 Sync connected');},800);
     }catch(e){clearCloudConfig();statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Failed: '+esc(e.message)+'</span></div>';btn.disabled=false;}
     return;
   }
-  if(!apiKey){statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Paste your X-MASTER-KEY to connect.</span></div>';return;}
-  if(!apiKey.startsWith('$2a$')&&!apiKey.startsWith('$2b$')){statusEl.innerHTML='<div class="ai-status" style="background:#FEF3C7;color:#92400E"><span>⚠️</span><span>That doesn\'t look like a JSONBin X-MASTER-KEY. It should start with <code>$2a$10$</code>.</span></div>';return;}
+  if(!token){statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Paste your GitHub token to connect.</span></div>';return;}
   btn.disabled=true;
-  statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Creating your cloud storage bin…</span></div>';
+  statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Creating your private Gist…</span></div>';
   try{
-    const binId=await cloudCreateBin(apiKey);
-    if(!binId)throw new Error('No bin ID returned');
-    setCloudConfig({apiKey,binId});cloudLastPush=Date.now();
-    statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Cloud sync connected! Your data is now saved online.</span></div>';
-    setTimeout(()=>{document.getElementById('modal-box').innerHTML=renderCloudConnected(getCloudConfig());toast('☁️ Cloud sync active');},900);
-  }catch(e){clearCloudConfig();statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Could not connect: '+esc(e.message)+'.</span></div>';btn.disabled=false;}
+    const gistId=await cloudCreateGist(token);
+    if(!gistId)throw new Error('No Gist ID returned');
+    setCloudConfig({token,gistId});cloudLastPush=Date.now();
+    statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Your data is now synced to a private Gist.</span></div>';
+    setTimeout(()=>{document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());toast('🔗 Sync active');},900);
+  }catch(e){
+    clearCloudConfig();
+    let hint=e.message;
+    if(/401/.test(e.message))hint='Token rejected (401). Make sure it has Gists: Read and write permission.';
+    if(/403/.test(e.message))hint='Access forbidden (403). Check the token\'s Gist permission.';
+    statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Could not connect: '+esc(hint)+'</span></div>';
+    btn.disabled=false;
+  }
 }
 function copyShareCode(){
   const field=document.getElementById('share-code-field');
@@ -1968,10 +1951,10 @@ function copyShareCode(){
   try{document.execCommand('copy');toast('📋 Share code copied');}
   catch(e){if(navigator.clipboard){navigator.clipboard.writeText(field.value).then(()=>toast('📋 Share code copied'));}}
 }
-async function cloudManualPull(){toast('Pulling from cloud…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeCloudSync();}else{toast('Pull failed: '+(r.err||'unknown'));}}
-async function cloudManualPush(){toast('Pushing to cloud…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to cloud');document.getElementById('modal-box').innerHTML=renderCloudConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}}
-function disconnectCloudSync(){if(!confirm('Disconnect this device from cloud sync?\n\nYour local data stays intact. Your cloud data also stays intact — reconnect anytime using your share code.'))return;clearCloudConfig();updateSyncStatus(null);closeCloudSync();toast('Cloud sync disconnected');}
-function closeCloudSync(){const box=document.getElementById('modal-box');if(box)box.style.maxWidth='';closeModal();}
+async function cloudManualPull(){toast('Pulling…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeGistSync();}else{toast('Pull failed: '+(r.err||'unknown'));}}
+async function cloudManualPush(){toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to Gist');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}}
+function disconnectGistSync(){if(!confirm('Disconnect this device from sync?\n\nYour local data stays intact, and the Gist stays intact. Reconnect anytime with your share code.'))return;clearCloudConfig();updateSyncStatus(null);closeGistSync();toast('Sync disconnected');}
+function closeGistSync(){const box=document.getElementById('modal-box');if(box)box.style.maxWidth='';closeModal();}
 
 // ── STAPLES CATALOG ──
 function openCatalogModal(){state.catalogStore=state.currentStore||STORES[0];state.catalogSearch='';renderCatalogModal();document.getElementById('modal-overlay').style.display='flex';}
