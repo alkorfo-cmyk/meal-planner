@@ -536,9 +536,94 @@ function applyCloudSnapshot(snap){
   return true;
 }
 
-// No-ops kept so existing save calls don't error. Sync is manual only.
-function schedulCloudPush(){return;}
-function startCloudAutoSync(){return;}
+// ── SMART AUTO-SYNC ──
+// Auto-push shortly after you stop editing; auto-pull on a gentle timer.
+// Before pushing, check the Gist's timestamp — if it's newer than what we
+// last saw, pull first so we don't overwrite someone else's changes.
+let autoPushTimer=null;
+let autoPullTimer=null;
+let lastSeenSyncedAt=0;     // the _syncedAt of the last snapshot we pulled/pushed
+let syncInFlight=false;     // prevents overlapping network calls
+const AUTO_PUSH_DELAY=8000;   // wait 8s after last change before pushing
+const AUTO_PULL_INTERVAL=90000; // pull every 90s
+
+function autoSyncEnabled(){
+  const cfg=getCloudConfig();
+  return !!(cfg&&cfg.token&&cfg.gistId&&cfg.autoSync!==false);
+}
+
+// Called from sav() on every change — debounced push.
+function schedulCloudPush(){
+  if(!autoSyncEnabled())return;
+  if(autoPushTimer)clearTimeout(autoPushTimer);
+  autoPushTimer=setTimeout(()=>{autoPushSafe();},AUTO_PUSH_DELAY);
+}
+
+// Start the periodic background pull. Called on connect and at startup.
+function startCloudAutoSync(){
+  if(autoPullTimer)clearInterval(autoPullTimer);
+  if(!autoSyncEnabled())return;
+  autoPullTimer=setInterval(()=>{autoPullSafe();},AUTO_PULL_INTERVAL);
+}
+function stopCloudAutoSync(){
+  if(autoPullTimer){clearInterval(autoPullTimer);autoPullTimer=null;}
+  if(autoPushTimer){clearTimeout(autoPushTimer);autoPushTimer=null;}
+}
+
+// Read just the Gist's metadata snapshot timestamp without applying it.
+async function fetchRemoteSyncedAt(){
+  const cfg=getCloudConfig();
+  if(!cfg||!cfg.token||!cfg.gistId)return null;
+  try{
+    const res=await fetch('https://api.github.com/gists/'+cfg.gistId,{method:'GET',headers:GH_HEADERS(cfg.token)});
+    if(!res.ok)return null;
+    const data=await res.json();
+    const file=data.files&&data.files[GIST_FILENAME];
+    if(!file||!file.content)return {empty:true,snap:null};
+    let snap;try{snap=JSON.parse(file.content);}catch(e){return null;}
+    return {empty:false,snap,syncedAt:snap._syncedAt||0};
+  }catch(e){return null;}
+}
+
+// Safe auto-push: if remote is newer than what we last saw, pull first.
+async function autoPushSafe(){
+  if(!autoSyncEnabled()||syncInFlight)return;
+  syncInFlight=true;
+  try{
+    const remote=await fetchRemoteSyncedAt();
+    if(remote&&!remote.empty&&remote.syncedAt>lastSeenSyncedAt){
+      // Someone else pushed newer data since we last synced — take theirs first.
+      applyCloudSnapshot(remote.snap);
+      lastSeenSyncedAt=remote.syncedAt;
+      renderAll();
+      if(document.getElementById('mobile-shop').style.display!=='none')renderMobileShop();
+      toast('↺ Synced newer changes from another device');
+      // Don't immediately overwrite; let the next edit trigger a fresh push.
+      return;
+    }
+    const r=await cloudPush();
+    if(r.ok)lastSeenSyncedAt=Date.now();
+  }finally{syncInFlight=false;}
+}
+
+// Safe auto-pull: only apply if remote is newer than what we have.
+async function autoPullSafe(){
+  if(!autoSyncEnabled()||syncInFlight)return;
+  // Don't yank data out from under the user while a modal is open
+  if(document.getElementById('modal-overlay').style.display==='flex')return;
+  syncInFlight=true;
+  try{
+    const remote=await fetchRemoteSyncedAt();
+    if(remote&&!remote.empty&&remote.syncedAt>lastSeenSyncedAt){
+      applyCloudSnapshot(remote.snap);
+      lastSeenSyncedAt=remote.syncedAt;
+      renderAll();
+      if(document.getElementById('mobile-shop').style.display!=='none')renderMobileShop();
+      updateSyncStatus('ok');
+      toast('↺ Updated from another device');
+    }
+  }finally{syncInFlight=false;}
+}
 
 const GH_HEADERS=(token)=>({'Accept':'application/vnd.github+json','Authorization':'Bearer '+token,'X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'});
 
@@ -552,6 +637,7 @@ async function cloudPush(){
     const res=await fetch('https://api.github.com/gists/'+cfg.gistId,{method:'PATCH',headers:GH_HEADERS(cfg.token),body:JSON.stringify(body)});
     if(!res.ok){const txt=await res.text();throw new Error(`${res.status} ${txt.slice(0,120)}`);}
     cloudLastPush=Date.now();
+    lastSeenSyncedAt=snap._syncedAt;
     updateSyncStatus('ok');
     return {ok:true};
   }catch(e){console.error('cloudPush failed',e);updateSyncStatus('error',e.message);return {ok:false,err:e.message};}
@@ -579,6 +665,7 @@ async function cloudPull(silent){
     }
     applyCloudSnapshot(snap);
     cloudLastPull=Date.now();
+    lastSeenSyncedAt=snap._syncedAt||Date.now();
     if(!silent){renderAll();if(document.getElementById('mobile-shop').style.display!=='none')renderMobileShop();}
     updateSyncStatus('ok');
     return {ok:true,snap};
@@ -624,9 +711,16 @@ async function init(){
   document.getElementById('loading').style.display='none';
   document.getElementById('app').style.display='block';
   renderAll();
-  // Show the sync indicator state if cloud is configured, but DO NOT auto-pull.
+  // If sync is configured, do an initial pull then start background auto-sync.
   const cfg=getCloudConfig();
-  if(cfg&&cfg.apiKey&&cfg.binId){updateSyncStatus('ok');}
+  if(cfg&&cfg.token&&cfg.gistId){
+    updateSyncStatus('ok');
+    cloudPull(true).then(r=>{
+      if(r&&r.ok&&r.snap&&r.snap._syncedAt)lastSeenSyncedAt=r.snap._syncedAt;
+      renderAll();
+      startCloudAutoSync();
+    });
+  }
 }
 
 function persist(){
@@ -1892,19 +1986,32 @@ function renderGistSetup(){
 function renderGistConnected(cfg){
   const lastPushStr=cloudLastPush?new Date(cloudLastPush).toLocaleTimeString():'—';
   const shareCode=btoa(JSON.stringify({t:cfg.token,g:cfg.gistId}));
+  const autoOn=cfg.autoSync!==false;
   return `
     <div class="modal-title">🔗 Sync Connected</div>
-    <div class="cloud-status-card"><div class="cloud-status-icon">✓</div><div style="flex:1"><div style="font-weight:700;color:var(--green-dark);font-size:15px">Gist sync is active</div><div style="font-size:12px;color:var(--text-muted);margin-top:3px">Last pushed: ${lastPushStr}</div></div></div>
-    <p style="font-size:12px;color:var(--text-muted);margin:12px 0;line-height:1.5">Sync happens only when you tap the buttons — tap <strong>Push Now</strong> after changes, and <strong>Pull Now</strong> (or the ↻ button) on another device to receive them.</p>
-    <div style="margin:18px 0;padding:14px;background:#FFF8E1;border-radius:10px;border:1px solid #F0D080">
+    <div class="cloud-status-card"><div class="cloud-status-icon">✓</div><div style="flex:1"><div style="font-weight:700;color:var(--green-dark);font-size:15px">Auto-sync is ${autoOn?'ON':'OFF'}</div><div style="font-size:12px;color:var(--text-muted);margin-top:3px">Last activity: ${lastPushStr}</div></div></div>
+    <label style="display:flex;align-items:center;gap:10px;margin:14px 0;padding:12px;background:#F0F7F4;border-radius:10px;cursor:pointer">
+      <input type="checkbox" ${autoOn?'checked':''} onchange="toggleAutoSync(this.checked)" style="width:20px;height:20px;accent-color:var(--green);cursor:pointer">
+      <div style="flex:1"><div style="font-weight:600;font-size:14px">Automatic sync</div><div style="font-size:12px;color:var(--text-muted)">Changes sync in the background. Other devices update within ~2 minutes. No buttons needed.</div></div>
+    </label>
+    <div style="margin:16px 0;padding:14px;background:#FFF8E1;border-radius:10px;border:1px solid #F0D080">
       <div class="form-label" style="margin-bottom:6px;color:#7B5800">📤 Family Share Code</div>
       <div style="font-size:12px;color:#9B7320;margin-bottom:8px;line-height:1.5">Send this to family members so they sync the same list. They paste it into "Family member joining?" on their device.</div>
       <textarea class="input" readonly id="share-code-field" style="font-family:monospace;font-size:11px;background:white;min-height:60px;word-break:break-all;color:#3A2E1A">${shareCode}</textarea>
       <button class="btn btn-sm btn-primary" style="width:100%;margin-top:8px" onclick="copyShareCode()">📋 Copy Share Code</button>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPull()">⬇ Pull Now</button><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPush()">⬆ Push Now</button></div>
+    <details style="margin-bottom:12px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Manual sync buttons</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:10px">Usually not needed with auto-sync on, but here as a backup.</div><div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPull()">⬇ Pull Now</button><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPush()">⬆ Push Now</button></div></details>
     <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing. Your data stays both here and in the Gist. Reconnect anytime with your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectGistSync()">Disconnect Sync</button></details>
     <button class="btn btn-primary" style="width:100%" onclick="closeGistSync()">Done</button>`;
+}
+function toggleAutoSync(on){
+  const cfg=getCloudConfig();
+  if(!cfg)return;
+  cfg.autoSync=on;
+  setCloudConfig(cfg);
+  if(on){startCloudAutoSync();toast('Auto-sync turned on');}
+  else{stopCloudAutoSync();toast('Auto-sync turned off');}
+  document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());
 }
 async function connectGistSync(){
   const btn=document.getElementById('gist-connect-btn');
@@ -1922,6 +2029,7 @@ async function connectGistSync(){
       if(!r.ok)throw new Error(r.err||'Failed to pull data');
       statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Pulling latest data…</span></div>';
       renderAll();
+      startCloudAutoSync();
       setTimeout(()=>{closeGistSync();toast('🔗 Sync connected');},800);
     }catch(e){clearCloudConfig();statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Failed: '+esc(e.message)+'</span></div>';btn.disabled=false;}
     return;
@@ -1932,8 +2040,9 @@ async function connectGistSync(){
   try{
     const gistId=await cloudCreateGist(token);
     if(!gistId)throw new Error('No Gist ID returned');
-    setCloudConfig({token,gistId});cloudLastPush=Date.now();
-    statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Your data is now synced to a private Gist.</span></div>';
+    setCloudConfig({token,gistId});cloudLastPush=Date.now();lastSeenSyncedAt=Date.now();
+    statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Auto-sync is now on.</span></div>';
+    startCloudAutoSync();
     setTimeout(()=>{document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());toast('🔗 Sync active');},900);
   }catch(e){
     clearCloudConfig();
@@ -1953,7 +2062,7 @@ function copyShareCode(){
 }
 async function cloudManualPull(){toast('Pulling…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeGistSync();}else{toast('Pull failed: '+(r.err||'unknown'));}}
 async function cloudManualPush(){toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to Gist');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}}
-function disconnectGistSync(){if(!confirm('Disconnect this device from sync?\n\nYour local data stays intact, and the Gist stays intact. Reconnect anytime with your share code.'))return;clearCloudConfig();updateSyncStatus(null);closeGistSync();toast('Sync disconnected');}
+function disconnectGistSync(){if(!confirm('Disconnect this device from sync?\n\nYour local data stays intact, and the Gist stays intact. Reconnect anytime with your share code.'))return;stopCloudAutoSync();clearCloudConfig();updateSyncStatus(null);closeGistSync();toast('Sync disconnected');}
 function closeGistSync(){const box=document.getElementById('modal-box');if(box)box.style.maxWidth='';closeModal();}
 
 // ── STAPLES CATALOG ──
