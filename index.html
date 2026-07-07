@@ -2001,6 +2001,7 @@ function renderGistConnected(cfg){
       <button class="btn btn-sm btn-primary" style="width:100%;margin-top:8px" onclick="copyShareCode()">📋 Copy Share Code</button>
     </div>
     <details style="margin-bottom:12px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Manual sync buttons</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:10px">Usually not needed with auto-sync on, but here as a backup.</div><div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPull()">⬇ Pull Now</button><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPush()">⬆ Push Now</button></div></details>
+    <details style="margin-bottom:12px;padding:12px;background:#EFF5FF;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#1E3A5F">Update token (same Gist, same share code)</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">If you regenerated your GitHub token, paste the new value here. Keeps your existing Gist and share code — nothing to re-share with family.</div><input class="input" id="update-token-field" type="password" placeholder="Paste new token (github_pat_... or ghp_...)" autocomplete="off" spellcheck="false" style="margin-bottom:8px"><button class="btn btn-primary btn-sm" style="width:100%" onclick="updateGistToken()">Save New Token</button><div id="update-token-status"></div></details>
     <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing. Your data stays both here and in the Gist. Reconnect anytime with your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectGistSync()">Disconnect Sync</button></details>
     <button class="btn btn-primary" style="width:100%" onclick="closeGistSync()">Done</button>`;
 }
@@ -2012,6 +2013,33 @@ function toggleAutoSync(on){
   if(on){startCloudAutoSync();toast('Auto-sync turned on');}
   else{stopCloudAutoSync();toast('Auto-sync turned off');}
   document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());
+}
+async function updateGistToken(){
+  const cfg=getCloudConfig();
+  if(!cfg||!cfg.gistId){toast('No existing connection to update');return;}
+  const newToken=document.getElementById('update-token-field')?.value?.trim();
+  const statusEl=document.getElementById('update-token-status');
+  if(!newToken){if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Paste the new token first.</span></div>';return;}
+  if(statusEl)statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Checking token against your Gist…</span></div>';
+  try{
+    // Verify the new token can actually read the existing Gist before saving it
+    const res=await fetch('https://api.github.com/gists/'+cfg.gistId,{method:'GET',headers:GH_HEADERS(newToken)});
+    if(!res.ok){
+      const txt=await res.text();
+      let hint=res.status+' '+txt.slice(0,80);
+      if(res.status===401)hint='Token rejected (401) — double-check you copied it fully.';
+      if(res.status===403)hint='Forbidden (403) — token needs Gists: Read and write permission.';
+      if(res.status===404)hint='Gist not found (404) — this token may belong to a different GitHub account than the one that owns the Gist.';
+      throw new Error(hint);
+    }
+    cfg.token=newToken;
+    setCloudConfig(cfg);
+    if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Token updated. Same Gist and share code — you\'re all set.</span></div>';
+    toast('✓ Token updated');
+    startCloudAutoSync();
+  }catch(e){
+    if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>'+esc(e.message)+'</span></div>';
+  }
 }
 async function connectGistSync(){
   const btn=document.getElementById('gist-connect-btn');
