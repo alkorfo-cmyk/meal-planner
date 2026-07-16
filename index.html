@@ -713,7 +713,7 @@ async function init(){
   renderAll();
   // If sync is configured, do an initial pull then start background auto-sync.
   const cfg=getCloudConfig();
-  if(cfg&&cfg.token&&cfg.gistId){
+  if(cfg&&cfg.url&&cfg.anonKey){
     updateSyncStatus('ok');
     cloudPull(true).then(r=>{
       if(r&&r.ok&&r.snap&&r.snap._syncedAt)lastSeenSyncedAt=r.snap._syncedAt;
@@ -1711,10 +1711,10 @@ function completeShopping(){
   toast(`🎉 Trip complete! ${logged} item${logged!==1?'s':''} logged for future suggestions`);
 }
 
-// Sync button: pull from Gist manually (only runs when tapped)
+// Sync button: pull from cloud manually (only runs when tapped)
 async function syncFromCloud(){
   const cfg=getCloudConfig();
-  if(!cfg||!cfg.token||!cfg.gistId){openGistSyncModal();return;}
+  if(!cfg||!cfg.url||!cfg.anonKey){openGistSyncModal();return;}
   toast('Syncing…');
   const btn=document.querySelector('.mshop-sync');
   if(btn){btn.disabled=true;btn.textContent='⏳';}
@@ -1962,121 +1962,126 @@ function deleteCat(storeName,catName){
   STORE_CATS[storeName]=otherCats;persist();refreshStoresModal();renderShop();renderLibrary();toast(`Category "${catName}" deleted`);
 }
 
-// ── GITHUB GIST SYNC SETUP ──
+// ── SUPABASE SYNC SETUP ──
 function openGistSyncModal(){
   const cfg=getCloudConfig()||{};
   const box=document.getElementById('modal-box');
   box.style.maxWidth='580px';
-  if(cfg.token&&cfg.gistId){box.innerHTML=renderGistConnected(cfg);}else{box.innerHTML=renderGistSetup();}
+  if(cfg.url&&cfg.anonKey){box.innerHTML=renderGistConnected(cfg);}else{box.innerHTML=renderGistSetup();}
   document.getElementById('modal-overlay').style.display='flex';
 }
 function renderGistSetup(){
   return `
-    <div class="modal-title">🔗 Set Up Sync (GitHub Gist)</div>
-    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px;line-height:1.55">Sync your data across devices through a private GitHub Gist. It's free, permanent, and tied to your GitHub account — no separate service, no monthly limits to worry about.</p>
+    <div class="modal-title">🔗 Set Up Sync (Supabase)</div>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:14px;line-height:1.55">Sync across all your devices through a free Supabase project. It works from the browser, has no request cap you'll ever hit, and stays free. Follow the setup guide, then paste two values below.</p>
     <div class="cloud-steps">
-      <div class="cloud-step"><div class="cloud-step-num">1</div><div class="cloud-step-body"><div class="cloud-step-title">Create a GitHub access token</div><div class="cloud-step-desc">Open the link, then: <strong>Generate new token</strong> → give it a name like "MealPlanner" → set an expiration (or "No expiration") → under <strong>Permissions</strong>, find <strong>Gists</strong> and set it to <strong>Read and write</strong> → Generate.</div><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" class="cloud-link-btn">Open GitHub Token Page →</a></div></div>
-      <div class="cloud-step"><div class="cloud-step-num">2</div><div class="cloud-step-body"><div class="cloud-step-title">Paste the token here</div><input class="input" id="gist-token" type="password" placeholder="github_pat_... or ghp_..." autocomplete="off" spellcheck="false"><div class="cloud-hint">Stored only on this device. Never shared or uploaded anywhere except GitHub itself.</div></div></div>
-      <div class="cloud-step"><div class="cloud-step-num">3</div><div class="cloud-step-body"><div class="cloud-step-title">Create your sync file</div><div class="cloud-step-desc">Tap below and we'll make a private Gist holding your current data, then connect to it.</div></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">1</div><div class="cloud-step-body"><div class="cloud-step-title">Create a free project</div><div class="cloud-step-desc">Sign up, click <strong>New project</strong>, give it any name and password, pick the closest region. Wait ~2 min for it to finish setting up.</div><a href="https://supabase.com/dashboard" target="_blank" class="cloud-link-btn">Open Supabase →</a></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">2</div><div class="cloud-step-body"><div class="cloud-step-title">Create the data table</div><div class="cloud-step-desc">In your project: left sidebar → <strong>SQL Editor</strong> → paste the snippet below → click <strong>Run</strong>. This makes the table and allows the app to read/write it.</div><button class="btn btn-sm btn-secondary" style="margin-top:2px" onclick="copySqlSnippet()">📋 Copy SQL Snippet</button></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">3</div><div class="cloud-step-body"><div class="cloud-step-title">Get your Project URL &amp; anon key</div><div class="cloud-step-desc">Left sidebar → <strong>Project Settings</strong> → <strong>API</strong> (or <strong>Data API</strong>). Copy the <strong>Project URL</strong> and the <strong>anon / public</strong> key.</div></div></div>
+      <div class="cloud-step"><div class="cloud-step-num">4</div><div class="cloud-step-body"><div class="cloud-step-title">Paste them here</div>
+        <input class="input" id="sb-url" placeholder="Project URL (https://xxxx.supabase.co)" autocomplete="off" spellcheck="false" style="margin-bottom:8px">
+        <input class="input" id="sb-key" type="password" placeholder="anon / public key (long, starts with eyJ...)" autocomplete="off" spellcheck="false">
+        <div class="cloud-hint">Stored only on this device. The anon key is safe to use in a browser.</div>
+      </div></div>
     </div>
-    <details style="margin-top:18px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Family member joining? Use a share code instead</summary><div style="padding-top:10px"><div class="form-label" style="margin-bottom:5px">Paste the share code from the main device</div><input class="input" id="gist-share-code" placeholder="Paste share code" style="font-family:monospace;font-size:12px"></div></details>
+    <details style="margin-top:18px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Family member joining? Use a share code</summary><div style="padding-top:10px"><div class="form-label" style="margin-bottom:5px">Paste the share code from the main device</div><input class="input" id="sb-share-code" placeholder="Paste share code" style="font-family:monospace;font-size:12px"></div></details>
     <div id="gist-setup-status"></div>
-    <div style="display:flex;gap:10px;margin-top:20px"><button class="btn btn-secondary" style="flex:1" onclick="closeGistSync()">Cancel</button><button class="btn btn-primary" style="flex:2" onclick="connectGistSync()" id="gist-connect-btn">🔗 Create &amp; Connect</button></div>`;
+    <div style="display:flex;gap:10px;margin-top:20px"><button class="btn btn-secondary" style="flex:1" onclick="closeGistSync()">Cancel</button><button class="btn btn-primary" style="flex:2" onclick="connectGistSync()" id="gist-connect-btn">🔗 Connect</button></div>`;
+}
+const SB_SQL_SNIPPET=`create table if not exists planner (
+  id text primary key,
+  data jsonb,
+  updated_at timestamptz default now()
+);
+alter table planner enable row level security;
+drop policy if exists "anon full access" on planner;
+create policy "anon full access" on planner
+  for all using (true) with check (true);
+grant all on planner to anon;`;
+function copySqlSnippet(){
+  const doCopy=(t)=>{
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(()=>toast('📋 SQL copied — paste into Supabase SQL Editor')).catch(()=>fallbackCopy(t));}
+    else fallbackCopy(t);
+  };
+  const fallbackCopy=(t)=>{
+    const ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');toast('📋 SQL copied');}catch(e){alert(t);}
+    document.body.removeChild(ta);
+  };
+  doCopy(SB_SQL_SNIPPET);
 }
 function renderGistConnected(cfg){
   const lastPushStr=cloudLastPush?new Date(cloudLastPush).toLocaleTimeString():'—';
-  const shareCode=btoa(JSON.stringify({t:cfg.token,g:cfg.gistId}));
+  const shareCode=btoa(JSON.stringify({u:cfg.url,k:cfg.anonKey}));
   const autoOn=cfg.autoSync!==false;
   return `
     <div class="modal-title">🔗 Sync Connected</div>
     <div class="cloud-status-card"><div class="cloud-status-icon">✓</div><div style="flex:1"><div style="font-weight:700;color:var(--green-dark);font-size:15px">Auto-sync is ${autoOn?'ON':'OFF'}</div><div style="font-size:12px;color:var(--text-muted);margin-top:3px">Last activity: ${lastPushStr}</div></div></div>
     <label style="display:flex;align-items:center;gap:10px;margin:14px 0;padding:12px;background:#F0F7F4;border-radius:10px;cursor:pointer">
       <input type="checkbox" ${autoOn?'checked':''} onchange="toggleAutoSync(this.checked)" style="width:20px;height:20px;accent-color:var(--green);cursor:pointer">
-      <div style="flex:1"><div style="font-weight:600;font-size:14px">Automatic sync</div><div style="font-size:12px;color:var(--text-muted)">Changes sync in the background. Other devices update within ~2 minutes. No buttons needed.</div></div>
+      <div style="flex:1"><div style="font-weight:600;font-size:14px">Automatic sync</div><div style="font-size:12px;color:var(--text-muted)">Changes sync in the background. Other devices update within ~2 minutes.</div></div>
     </label>
     <div style="margin:16px 0;padding:14px;background:#FFF8E1;border-radius:10px;border:1px solid #F0D080">
       <div class="form-label" style="margin-bottom:6px;color:#7B5800">📤 Family Share Code</div>
-      <div style="font-size:12px;color:#9B7320;margin-bottom:8px;line-height:1.5">Send this to family members so they sync the same list. They paste it into "Family member joining?" on their device.</div>
-      <textarea class="input" readonly id="share-code-field" style="font-family:monospace;font-size:11px;background:white;min-height:60px;word-break:break-all;color:#3A2E1A">${shareCode}</textarea>
+      <div style="font-size:12px;color:#9B7320;margin-bottom:8px;line-height:1.5">Send this to family so they sync the same list. They paste it into "Family member joining?" on their device — no setup needed on their end.</div>
+      <textarea class="input" readonly id="share-code-field" style="font-family:monospace;font-size:11px;background:white;min-height:70px;word-break:break-all;color:#3A2E1A">${shareCode}</textarea>
       <button class="btn btn-sm btn-primary" style="width:100%;margin-top:8px" onclick="copyShareCode()">📋 Copy Share Code</button>
     </div>
     <details style="margin-bottom:12px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Manual sync buttons</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:10px">Usually not needed with auto-sync on, but here as a backup.</div><div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPull()">⬇ Pull Now</button><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPush()">⬆ Push Now</button></div></details>
-    <details style="margin-bottom:12px;padding:12px;background:#EFF5FF;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#1E3A5F">Update token (same Gist, same share code)</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">If you regenerated your GitHub token, paste the new value here. Keeps your existing Gist and share code — nothing to re-share with family.</div><input class="input" id="update-token-field" type="password" placeholder="Paste new token (github_pat_... or ghp_...)" autocomplete="off" spellcheck="false" style="margin-bottom:8px"><button class="btn btn-primary btn-sm" style="width:100%" onclick="updateGistToken()">Save New Token</button><div id="update-token-status"></div></details>
-    <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing. Your data stays both here and in the Gist. Reconnect anytime with your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectGistSync()">Disconnect Sync</button></details>
+    <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing. Your data stays both here and in Supabase. Reconnect anytime with your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectGistSync()">Disconnect Sync</button></details>
     <button class="btn btn-primary" style="width:100%" onclick="closeGistSync()">Done</button>`;
 }
 function toggleAutoSync(on){
   const cfg=getCloudConfig();
   if(!cfg)return;
-  cfg.autoSync=on;
-  setCloudConfig(cfg);
-  if(on){startCloudAutoSync();toast('Auto-sync turned on');}
-  else{stopCloudAutoSync();toast('Auto-sync turned off');}
+  cfg.autoSync=on;setCloudConfig(cfg);
+  if(on){startCloudAutoSync();toast('Auto-sync turned on');}else{stopCloudAutoSync();toast('Auto-sync turned off');}
   document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());
-}
-async function updateGistToken(){
-  const cfg=getCloudConfig();
-  if(!cfg||!cfg.gistId){toast('No existing connection to update');return;}
-  const newToken=document.getElementById('update-token-field')?.value?.trim();
-  const statusEl=document.getElementById('update-token-status');
-  if(!newToken){if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Paste the new token first.</span></div>';return;}
-  if(statusEl)statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Checking token against your Gist…</span></div>';
-  try{
-    // Verify the new token can actually read the existing Gist before saving it
-    const res=await fetch('https://api.github.com/gists/'+cfg.gistId,{method:'GET',headers:GH_HEADERS(newToken)});
-    if(!res.ok){
-      const txt=await res.text();
-      let hint=res.status+' '+txt.slice(0,80);
-      if(res.status===401)hint='Token rejected (401) — double-check you copied it fully.';
-      if(res.status===403)hint='Forbidden (403) — token needs Gists: Read and write permission.';
-      if(res.status===404)hint='Gist not found (404) — this token may belong to a different GitHub account than the one that owns the Gist.';
-      throw new Error(hint);
-    }
-    cfg.token=newToken;
-    setCloudConfig(cfg);
-    if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Token updated. Same Gist and share code — you\'re all set.</span></div>';
-    toast('✓ Token updated');
-    startCloudAutoSync();
-  }catch(e){
-    if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>'+esc(e.message)+'</span></div>';
-  }
 }
 async function connectGistSync(){
   const btn=document.getElementById('gist-connect-btn');
-  const token=document.getElementById('gist-token')?.value?.trim();
-  const shareCode=document.getElementById('gist-share-code')?.value?.trim();
   const statusEl=document.getElementById('gist-setup-status');
+  const shareCode=document.getElementById('sb-share-code')?.value?.trim();
   if(shareCode){
     btn.disabled=true;
     statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Joining family sync…</span></div>';
     try{
       const decoded=JSON.parse(atob(shareCode));
-      if(!decoded.t||!decoded.g)throw new Error('Invalid share code format');
-      setCloudConfig({token:decoded.t,gistId:decoded.g});
+      if(!decoded.u||!decoded.k)throw new Error('Invalid share code format');
+      const cfg={url:decoded.u,anonKey:decoded.k};
+      const testRes=await fetch(cfg.url+'/rest/v1/'+SB_TABLE+'?select=id&limit=1',{method:'GET',headers:SB_HEADERS(cfg)});
+      if(!testRes.ok){const txt=await testRes.text();throw new Error(`${testRes.status} ${txt.slice(0,140)}`);}
+      setCloudConfig(cfg);
       const r=await cloudPull(true);
       if(!r.ok)throw new Error(r.err||'Failed to pull data');
       statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Pulling latest data…</span></div>';
-      renderAll();
-      startCloudAutoSync();
+      renderAll();startCloudAutoSync();
       setTimeout(()=>{closeGistSync();toast('🔗 Sync connected');},800);
     }catch(e){clearCloudConfig();statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Failed: '+esc(e.message)+'</span></div>';btn.disabled=false;}
     return;
   }
-  if(!token){statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Paste your GitHub token to connect.</span></div>';return;}
+  const url=document.getElementById('sb-url')?.value?.trim().replace(/\/+$/,'').replace(/\/rest\/v1$/,'');
+  const anonKey=document.getElementById('sb-key')?.value?.trim();
+  if(!url||!anonKey){statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Paste both the Project URL and the anon key.</span></div>';return;}
+  if(!/^https:\/\/.+\.supabase\.co/.test(url)){statusEl.innerHTML='<div class="ai-status" style="background:#FEF3C7;color:#92400E"><span>⚠️</span><span>The Project URL should look like <code>https://xxxx.supabase.co</code></span></div>';return;}
   btn.disabled=true;
-  statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Creating your private Gist…</span></div>';
+  statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Testing connection…</span></div>';
   try{
-    const gistId=await cloudCreateGist(token);
-    if(!gistId)throw new Error('No Gist ID returned');
-    setCloudConfig({token,gistId});cloudLastPush=Date.now();lastSeenSyncedAt=Date.now();
+    const cfg={url,anonKey};
+    // Test the connection inline (read one row from the table)
+    const testRes=await fetch(url+'/rest/v1/'+SB_TABLE+'?select=id&limit=1',{method:'GET',headers:SB_HEADERS(cfg)});
+    if(!testRes.ok){const txt=await testRes.text();throw new Error(`${testRes.status} ${txt.slice(0,160)}`);}
+    setCloudConfig(cfg);
+    await cloudPush();
+    cloudLastPush=Date.now();lastSeenSyncedAt=Date.now();
     statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connected! Auto-sync is now on.</span></div>';
     startCloudAutoSync();
     setTimeout(()=>{document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());toast('🔗 Sync active');},900);
   }catch(e){
     clearCloudConfig();
     let hint=e.message;
-    if(/401/.test(e.message))hint='Token rejected (401). Make sure it has Gists: Read and write permission.';
-    if(/403/.test(e.message))hint='Access forbidden (403). Check the token\'s Gist permission.';
+    if(/relation .*planner.* does not exist|42P01|PGRST205/i.test(e.message))hint='Table not found — did you run the SQL snippet in step 2? Copy it and Run it in the SQL Editor.';
+    if(/401|invalid|JWT|apikey/i.test(e.message))hint='Key rejected — make sure you copied the anon/public key (not the service key), and the full Project URL.';
     statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Could not connect: '+esc(hint)+'</span></div>';
     btn.disabled=false;
   }
@@ -2089,8 +2094,8 @@ function copyShareCode(){
   catch(e){if(navigator.clipboard){navigator.clipboard.writeText(field.value).then(()=>toast('📋 Share code copied'));}}
 }
 async function cloudManualPull(){toast('Pulling…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeGistSync();}else{toast('Pull failed: '+(r.err||'unknown'));}}
-async function cloudManualPush(){toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to Gist');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}}
-function disconnectGistSync(){if(!confirm('Disconnect this device from sync?\n\nYour local data stays intact, and the Gist stays intact. Reconnect anytime with your share code.'))return;stopCloudAutoSync();clearCloudConfig();updateSyncStatus(null);closeGistSync();toast('Sync disconnected');}
+async function cloudManualPush(){toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to cloud');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}}
+function disconnectGistSync(){if(!confirm('Disconnect this device from sync?\n\nYour local data stays intact, and the cloud data stays intact. Reconnect anytime with your share code.'))return;stopCloudAutoSync();clearCloudConfig();updateSyncStatus(null);closeGistSync();toast('Sync disconnected');}
 function closeGistSync(){const box=document.getElementById('modal-box');if(box)box.style.maxWidth='';closeModal();}
 
 // ── STAPLES CATALOG ──
