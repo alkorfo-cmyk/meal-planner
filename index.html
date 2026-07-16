@@ -2049,7 +2049,8 @@ async function connectGistSync(){
       const decoded=JSON.parse(atob(shareCode));
       if(!decoded.u||!decoded.k)throw new Error('Invalid share code format');
       const cfg={url:decoded.u,anonKey:decoded.k};
-      const testRes=await fetch(cfg.url+'/rest/v1/planner?select=id&limit=1',{method:'GET',headers:SB_HEADERS(cfg)});
+      const testHeaders={'apikey':cfg.anonKey,'Authorization':'Bearer '+cfg.anonKey,'Content-Type':'application/json'};
+      const testRes=await fetch(cfg.url+'/rest/v1/planner?select=id&limit=1',{method:'GET',headers:testHeaders});
       if(!testRes.ok){const txt=await testRes.text();throw new Error(`${testRes.status} ${txt.slice(0,140)}`);}
       setCloudConfig(cfg);
       const r=await cloudPull(true);
@@ -2068,8 +2069,9 @@ async function connectGistSync(){
   statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Testing connection…</span></div>';
   try{
     const cfg={url,anonKey};
-    // Test the connection inline (read one row from the table)
-    const testRes=await fetch(url+'/rest/v1/planner?select=id&limit=1',{method:'GET',headers:SB_HEADERS(cfg)});
+    // Test the connection inline (read one row from the table) — headers built locally
+    const testHeaders={'apikey':anonKey,'Authorization':'Bearer '+anonKey,'Content-Type':'application/json'};
+    const testRes=await fetch(url+'/rest/v1/planner?select=id&limit=1',{method:'GET',headers:testHeaders});
     if(!testRes.ok){const txt=await testRes.text();throw new Error(`${testRes.status} ${txt.slice(0,160)}`);}
     setCloudConfig(cfg);
     await cloudPush();
