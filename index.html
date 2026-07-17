@@ -2122,8 +2122,16 @@ function copyShareCode(){
   try{document.execCommand('copy');toast('📋 Share code copied');}
   catch(e){if(navigator.clipboard){navigator.clipboard.writeText(field.value).then(()=>toast('📋 Share code copied'));}}
 }
-async function cloudManualPull(){toast('Pulling…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeGistSync();}else{toast('Pull failed: '+(r.err||'unknown'));}}
-async function cloudManualPush(){toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to cloud');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}}
+async function cloudManualPull(){
+  const problem=cloudConfigProblem();
+  if(problem){toast('⚠️ '+problem+' — use Repair');return;}
+  toast('Pulling…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeGistSync();}else{toast('Pull failed: '+(r.err||'unknown'));}
+}
+async function cloudManualPush(){
+  const problem=cloudConfigProblem();
+  if(problem){toast('⚠️ '+problem+' — use Repair');return;}
+  toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to cloud');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}
+}
 function disconnectGistSync(){if(!confirm('Disconnect this device from sync?\n\nYour local data stays intact, and the cloud data stays intact. Reconnect anytime with your share code.'))return;stopCloudAutoSync();clearCloudConfig();updateSyncStatus(null);closeGistSync();toast('Sync disconnected');}
 function closeGistSync(){const box=document.getElementById('modal-box');if(box)box.style.maxWidth='';closeModal();}
 
