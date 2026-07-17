@@ -2027,6 +2027,7 @@ function renderGistConnected(cfg){
       <textarea class="input" readonly id="share-code-field" style="font-family:monospace;font-size:11px;background:white;min-height:70px;word-break:break-all;color:#3A2E1A">${shareCode}</textarea>
       <button class="btn btn-sm btn-primary" style="width:100%;margin-top:8px" onclick="copyShareCode()">📋 Copy Share Code</button>
     </div>
+    <details style="margin-bottom:12px;padding:12px;background:#EFF5FF;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#1E3A5F">Connection details / repair</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">This device is currently pointed at:<br><code style="word-break:break-all;font-size:11px">${esc(cfg.url||'(no URL saved!)')}</code></div><div style="color:var(--text-muted);line-height:1.5;margin-bottom:8px">If sync fails with "not configured", re-enter both values here and tap Repair:</div><input class="input" id="repair-url" placeholder="https://xxxx.supabase.co" value="${esc(cfg.url||'')}" autocomplete="off" spellcheck="false" style="margin-bottom:8px"><input class="input" id="repair-key" type="password" placeholder="anon / public key (eyJ...)" value="${esc(cfg.anonKey||'')}" autocomplete="off" spellcheck="false" style="margin-bottom:8px"><button class="btn btn-primary btn-sm" style="width:100%" onclick="repairConnection()">🔧 Repair &amp; Reconnect</button><div id="repair-status"></div></details>
     <details style="margin-bottom:12px;padding:12px;background:#F8F9FA;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:var(--text)">Manual sync buttons</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5;margin-bottom:10px">Usually not needed with auto-sync on, but here as a backup.</div><div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPull()">⬇ Pull Now</button><button class="btn btn-secondary btn-sm" style="flex:1" onclick="cloudManualPush()">⬆ Push Now</button></div></details>
     <details style="margin-bottom:16px;padding:12px;background:#FEF2F2;border-radius:8px;font-size:13px"><summary style="cursor:pointer;font-weight:600;color:#991B1B">Disconnect</summary><div style="padding-top:10px;color:var(--text-muted);line-height:1.5">This device stops syncing. Your data stays both here and in Supabase. Reconnect anytime with your share code.</div><button class="btn btn-danger btn-sm" style="width:100%;margin-top:10px" onclick="disconnectGistSync()">Disconnect Sync</button></details>
     <button class="btn btn-primary" style="width:100%" onclick="closeGistSync()">Done</button>`;
@@ -2037,6 +2038,32 @@ function toggleAutoSync(on){
   cfg.autoSync=on;setCloudConfig(cfg);
   if(on){startCloudAutoSync();toast('Auto-sync turned on');}else{stopCloudAutoSync();toast('Auto-sync turned off');}
   document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());
+}
+async function repairConnection(){
+  const statusEl=document.getElementById('repair-status');
+  let url=document.getElementById('repair-url')?.value?.trim();
+  const anonKey=document.getElementById('repair-key')?.value?.trim();
+  // Clean URL carefully — only strip a trailing slash or an accidental /rest/v1
+  if(url){url=url.replace(/\/+$/,'');url=url.replace(/\/rest\/v1$/,'');url=url.replace(/\/+$/,'');}
+  if(!url||!anonKey){if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>Both fields are required.</span></div>';return;}
+  if(!/^https:\/\/.+\.supabase\.co$/.test(url)){if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEF3C7;color:#92400E"><span>⚠️</span><span>URL should look exactly like <code>https://xxxx.supabase.co</code> (no extra path).</span></div>';return;}
+  if(statusEl)statusEl.innerHTML='<div class="ai-status"><div class="ai-spinner"></div><span>Testing…</span></div>';
+  try{
+    const testHeaders={'apikey':anonKey,'Authorization':'Bearer '+anonKey,'Content-Type':'application/json'};
+    const testRes=await fetch(url+'/rest/v1/planner?select=id&limit=1',{method:'GET',headers:testHeaders});
+    if(!testRes.ok){const txt=await testRes.text();throw new Error(`${testRes.status} ${txt.slice(0,140)}`);}
+    // Save a clean, complete config
+    const cfg=getCloudConfig()||{};
+    cfg.url=url;cfg.anonKey=anonKey;
+    setCloudConfig(cfg);
+    if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#DCFCE7;color:#166534"><span>✓</span><span>Connection repaired! Pulling latest…</span></div>';
+    await cloudPull(false);
+    startCloudAutoSync();
+    toast('✓ Connection repaired');
+    setTimeout(()=>{document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());},700);
+  }catch(e){
+    if(statusEl)statusEl.innerHTML='<div class="ai-status" style="background:#FEE2E2;color:#991B1B"><span>⚠️</span><span>'+esc(e.message)+'</span></div>';
+  }
 }
 async function connectGistSync(){
   const btn=document.getElementById('gist-connect-btn');
