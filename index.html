@@ -711,9 +711,8 @@ async function init(){
   document.getElementById('loading').style.display='none';
   document.getElementById('app').style.display='block';
   renderAll();
-  // If sync is configured, do an initial pull then start background auto-sync.
-  const cfg=getCloudConfig();
-  if(cfg&&cfg.url&&cfg.anonKey){
+  // If sync is set up, pull once then start auto-sync.
+  if(cloudReady()){
     updateSyncStatus('ok');
     cloudPull(true).then(r=>{
       if(r&&r.ok&&r.snap&&r.snap._syncedAt)lastSeenSyncedAt=r.snap._syncedAt;
@@ -1711,16 +1710,15 @@ function completeShopping(){
   toast(`🎉 Trip complete! ${logged} item${logged!==1?'s':''} logged for future suggestions`);
 }
 
-// Sync button: pull from cloud manually (only runs when tapped)
+// Sync button (↻): pull from cloud, or open setup if not connected
 async function syncFromCloud(){
-  const cfg=getCloudConfig();
-  if(!cfg||!cfg.url||!cfg.anonKey){openGistSyncModal();return;}
+  if(!cloudReady()){openGistSyncModal();return;}
   toast('Syncing…');
   const btn=document.querySelector('.mshop-sync');
   if(btn){btn.disabled=true;btn.textContent='⏳';}
   try{
-    const result=await cloudPull(false);
-    if(result.ok){toast('✓ Synced');}else{toast('Sync failed: '+(result.err||'unknown'));}
+    const r=await cloudPull(false);
+    if(r.ok){toast('✓ Synced');}else{toast('Sync failed: '+(r.err||'unknown'));}
   }finally{
     if(btn){btn.disabled=false;btn.textContent='↻';}
   }
