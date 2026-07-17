@@ -2123,12 +2123,14 @@ function copyShareCode(){
   catch(e){if(navigator.clipboard){navigator.clipboard.writeText(field.value).then(()=>toast('📋 Share code copied'));}}
 }
 async function cloudManualPull(){
-  const problem=cloudConfigProblem();
+  const cfg=getCloudConfig();
+  const problem=!cfg?'No connection saved':(!cfg.url?'Project URL is missing':(!cfg.anonKey?'anon key is missing':null));
   if(problem){toast('⚠️ '+problem+' — use Repair');return;}
   toast('Pulling…');const r=await cloudPull(false);if(r.ok){toast('✓ Pulled latest data');closeGistSync();}else{toast('Pull failed: '+(r.err||'unknown'));}
 }
 async function cloudManualPush(){
-  const problem=cloudConfigProblem();
+  const cfg=getCloudConfig();
+  const problem=!cfg?'No connection saved':(!cfg.url?'Project URL is missing':(!cfg.anonKey?'anon key is missing':null));
   if(problem){toast('⚠️ '+problem+' — use Repair');return;}
   toast('Pushing…');const r=await cloudPush();if(r.ok){toast('✓ Pushed to cloud');document.getElementById('modal-box').innerHTML=renderGistConnected(getCloudConfig());}else{toast('Push failed: '+(r.err||'unknown'));}
 }
